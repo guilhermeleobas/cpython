@@ -996,6 +996,212 @@ typedef struct {
     _PyStackRef stack[1];
 } _PyEntryFrame;
 
+
+
+static void
+_Hook_MaybeClearShadowFrame(PyThreadState* tstate, _PyInterpreterFrame* frame, _PyInterpreterFrame* shadow) {
+    if (frame != shadow) {
+        DEBUG_msg("clear previous cloned frame");
+        _PyEval_FrameClearAndPop(tstate, shadow);
+    }
+}
+
+static int
+_Hook_check_code_compatibility(PyCodeObject* old_code,  PyCodeObject* new_code)
+{
+    // Check that the number of arguments is the same
+    Py_ssize_t total_argcount_old = old_code->co_argcount +
+                                    old_code->co_kwonlyargcount +
+                                    !!(old_code->co_flags & CO_VARARGS) +
+                                    !!(old_code->co_flags & CO_VARKEYWORDS);
+
+    Py_ssize_t total_argcount_new = new_code->co_argcount +
+                                    new_code->co_kwonlyargcount +
+                                    !!(new_code->co_flags & CO_VARARGS) +
+                                    !!(new_code->co_flags & CO_VARKEYWORDS);
+
+    if (total_argcount_old != total_argcount_new) {
+        PyErr_SetString(PyExc_SystemError,
+            "code object from hook is not compatible: different number of arguments");
+        return -1;
+    }
+
+    // Check that the number of free variables is the same
+    if (old_code->co_nfreevars != new_code->co_nfreevars) {
+        PyErr_SetString(PyExc_SystemError,
+            "code object from hook is not compatible: different number of free variables");
+        return -1;
+    }
+    return 0;
+}
+
+static void
+_Hook_copy_args(_PyInterpreterFrame* old, _PyInterpreterFrame* new)
+{
+    PyCodeObject* old_code = (PyCodeObject*) PyUnstable_InterpreterFrame_GetCode(old);
+    PyCodeObject* new_code = (PyCodeObject*) PyUnstable_InterpreterFrame_GetCode(new);
+
+    _PyStackRef* fastlocals_old = _PyFrame_GetLocalsArray(old);
+    _PyStackRef* fastlocals_new = _PyFrame_GetLocalsArray(new);
+
+    // <---- args | cell variables | free variables ---->
+    Py_ssize_t total_argcount_old = old_code->co_argcount +
+                                    old_code->co_kwonlyargcount +
+                                    !!(old_code->co_flags & CO_VARARGS) +
+                                    !!(old_code->co_flags & CO_VARKEYWORDS);
+
+    for (Py_ssize_t i = 0; i < total_argcount_old; i++) {
+        fastlocals_new[i] = PyStackRef_DUP(fastlocals_old[i]);
+    }
+
+    // copy free vars
+    int offset_old = old_code->co_nlocalsplus - old_code->co_nfreevars;
+    int offset_new = new_code->co_nlocalsplus - new_code->co_nfreevars;
+    for (Py_ssize_t i = 0; i < old_code->co_nfreevars; i++){
+        _PyStackRef ref = fastlocals_old[offset_old + i];
+        fastlocals_new[offset_new + i] = (PyStackRef_IsNull(ref) ? PyStackRef_NULL : PyStackRef_DUP(ref));
+    }
+
+    // copy cell vars
+    Py_ssize_t nfreevars_old = old_code->co_nfreevars;
+    Py_ssize_t localsplus_old = old_code->co_nlocalsplus;
+    Py_ssize_t localsplus_new = new_code->co_nlocalsplus;
+    for (Py_ssize_t i = localsplus_old - nfreevars_old - 1, j = localsplus_new - nfreevars_old - 1;
+        i >= total_argcount_old;
+        i--, j--) {
+        if (!(_PyLocals_GetKind(old_code->co_localspluskinds, i) &
+              CO_FAST_CELL)){
+            break;
+        }
+        _PyStackRef ref = fastlocals_old[i];
+        fastlocals_new[j] = (PyStackRef_IsNull(ref) ? PyStackRef_NULL : PyStackRef_DUP(ref));
+    }
+}
+
+static _PyInterpreterFrame*
+_Hook_CloneFrame(PyThreadState *tstate, _PyInterpreterFrame* old, PyCodeObject* new_code)
+{
+    DEBUG_msg("creating new code object %p from hook", new_code);
+    assert(new_code != NULL);
+    PyObject* new_func = PyFunction_New((PyObject*)new_code, old->f_globals);
+
+    // copy the closure object
+    // DEBUG_msg("copying closure to new function object %p", new_func);
+    PyObject* closure = PyFunction_GetClosure(PyStackRef_AsPyObjectBorrow(old->f_funcobj));
+    if (closure) {
+        PyFunction_SetClosure(new_func, closure);
+    }
+
+    // Create the shadow frame
+    // DEBUG_msg("creating shadow frame for code object %p, framesize=%d", new_code, new_code->co_framesize);
+    if (!_PyThreadState_HasStackSpace(tstate, new_code->co_framesize)) {
+        _PyErr_NoMemory(tstate);
+        Py_DECREF(new_func);
+        return NULL;
+    }
+
+    _PyInterpreterFrame* shadow = _PyFrame_PushUnchecked(
+        tstate,
+        PyStackRef_FromPyObjectSteal(new_func),  // Should new_func be a borrow'ed reference?
+        0,
+        old->previous
+    );
+
+    if (!_PyFrame_IsIncomplete(old)) {
+        PyObject* locals = _PyFrame_GetLocals(old);
+        if (locals != NULL) {
+            shadow->f_locals = locals;
+        }
+    }
+
+    // Copy args
+    // DEBUG_msg("copying args to shadow frame");
+    _Hook_copy_args(old, shadow);
+
+    DEBUG_msg("returning shadow frame %p", shadow);
+    return shadow;
+}
+
+
+PyObject* _Py_HOT_FUNCTION DONT_SLP_VECTORIZE
+_PyEval_FrameHook(PyThreadState *tstate,
+                  _PyInterpreterFrame *frame, int throwflag)
+{
+    // Ensure that frame hooks are enabled
+    assert(_PyInterpreterState_HasFrameHooks(tstate->interp));
+    assert(tstate->interp->enable_frame_hooks);
+
+    _PyInterpreterFrame* shadow = frame;
+    Py_ssize_t n = _PyInterpreterState_CountFrameHooks(tstate->interp);
+
+    DEBUG_msg("");
+    DEBUG_msg("Entering _PyEval_FrameHook for function %s",
+              PyUnicode_AsUTF8(
+                  ((PyCodeObject*)PyUnstable_InterpreterFrame_GetCode(frame))->co_name));
+
+    DEBUG_msg("Number of frame hooks: %zd", n);
+
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (!_PyInterpreterState_IsFrameHookEnabled(tstate->interp, i)) {
+            DEBUG_msg("Frame hook %zd is disabled, skipping", i);
+            continue;
+        }
+
+        tstate->interp->enable_frame_hooks = 0;
+        PyCodeObject *new_code = _PyInterpreterState_CallFrameHook(tstate->interp, i, shadow);
+        tstate->interp->enable_frame_hooks = 1;
+
+        if (new_code == NULL) {
+            // NULL return indicates an error
+            DEBUG_msg("Frame hook returned NULL code object");
+            // Only clear the original frame if we created a clone before
+            // If we didn't create a clone, the original frame will be freed
+            // by the caller of _PyEval_FrameHook
+            _Hook_MaybeClearShadowFrame(tstate, frame, shadow);
+            return NULL;
+        }
+
+        // At this point, if the hook raised an exception that didn't set new_code to NULL,
+        // or if validation failed, we need to clear the error and return NULL
+        // (The error should already be set by the hook or validation code)
+        if (PyErr_Occurred()) {
+            _Hook_MaybeClearShadowFrame(tstate, frame, shadow);
+            return NULL;
+        }
+        PyCodeObject* old_code = (PyCodeObject*) PyUnstable_InterpreterFrame_GetCode(shadow);
+
+        if (new_code == old_code) {
+            // No change, continue
+            continue;
+        }
+
+        if(_Hook_check_code_compatibility(old_code, new_code) < 0) {
+            // Code objects are incompatible, clean up shadow frame if needed
+            _Hook_MaybeClearShadowFrame(tstate, frame, shadow);
+            return NULL;
+        }
+
+        _Hook_MaybeClearShadowFrame(tstate, frame, shadow);
+        shadow = _Hook_CloneFrame(tstate, frame, new_code);
+        if (shadow == NULL) {
+            return NULL;
+        }
+        Py_DECREF(new_code);
+    }
+
+    _PyFrameEvalFunction eval_function = _PyInterpreterState_GetEvalFrameFunc(tstate->interp);
+
+    if (frame == shadow) {
+        // No cloning happened
+        return eval_function(tstate, frame, throwflag);
+    }
+
+    DEBUG_msg("Calling eval_function with new frame=%p, old frame=%p", shadow, frame);
+    PyObject *r = eval_function(tstate, shadow, throwflag);
+    _PyEval_FrameClearAndPop(tstate, frame);
+    return r;
+}
+
 PyObject* _Py_HOT_FUNCTION DONT_SLP_VECTORIZE
 _PyEval_EvalFrameDefault(PyThreadState *tstate, _PyInterpreterFrame *frame, int throwflag)
 {

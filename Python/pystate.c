@@ -707,6 +707,8 @@ init_interpreter(PyInterpreterState *interp,
     _Py_stackref_associate(interp, Py_True, PyStackRef_True);
 #endif
 
+    interp->enable_frame_hooks = 1;
+
     interp->_initialized = 1;
     return _PyStatus_OK();
 }
@@ -2627,6 +2629,184 @@ PyThreadState_Next(PyThreadState *tstate) {
     return tstate->next;
 }
 
+/********************************************/
+/* Eval hooks */
+/********************************************/
+
+static _PyFrameHookFunction
+_UnwrapFrameHook(PyObject *hookobj)
+{
+    return (_PyFrameHookFunction)PyCapsule_GetPointer(hookobj, "hook");
+}
+
+PyObject*
+PyUnstable_WrapFrameHookFunction(_PyFrameHookFunction hook)
+{
+    return PyCapsule_New((void *)hook, "hook", NULL);
+}
+
+PyObject*
+_PyInterpreterState_GetFrameHook(PyInterpreterState *interp, Py_ssize_t index)
+{
+    return PyList_GET_ITEM(interp->frame_hook_list, index);
+}
+
+PyCodeObject*
+_PyInterpreterState_CallFrameHook(PyInterpreterState *interp, Py_ssize_t index,
+                                   _PyInterpreterFrame *frame)
+{
+    PyObject *hookobj = _PyInterpreterState_GetFrameHook(interp, index);
+    if (PyCapsule_CheckExact(hookobj)) {
+        _PyFrameHookFunction hook = _UnwrapFrameHook(hookobj);
+        return (*hook)(frame);
+    }
+    // Python callable: call with the frame object.
+    // Incomplete frames (e.g. context manager / generator frames mid-setup)
+    // cannot have a PyFrameObject created for them; skip the hook for those.
+    if (_PyFrame_IsIncomplete(frame)) {
+        PyCodeObject *code = (PyCodeObject *)PyUnstable_InterpreterFrame_GetCode(frame);
+        Py_INCREF(code);
+        return code;
+    }
+    PyObject *frameobj = (PyObject *)_PyFrame_GetFrameObject(frame);
+    if (frameobj == NULL) {
+        return NULL;
+    }
+    PyObject *result = PyObject_CallOneArg(hookobj, frameobj);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (!PyCode_Check(result)) {
+        PyErr_Format(PyExc_TypeError,
+            "frame hook must return a code object, not %.200s",
+            Py_TYPE(result)->tp_name);
+        Py_DECREF(result);
+        return NULL;
+    }
+    return (PyCodeObject *)result;
+}
+
+int
+_PyInterpreterState_CountFrameHooks(PyInterpreterState *interp)
+{
+    if (interp->frame_hook_list == NULL) {
+        return 0;
+    }
+    return PyList_Size(interp->frame_hook_list);
+}
+
+int
+_PyInterpreterState_HasFrameHooks(PyInterpreterState *interp)
+{
+    return (interp->frame_hook_list != NULL) && (PyList_Size(interp->frame_hook_list) > 0);
+}
+
+int
+PyUnstable_ClearFrameHooks(PyInterpreterState *interp)
+{
+    if (interp->frame_hook_list == NULL) {
+        return 0;
+    }
+    if (PyList_Clear(interp->frame_hook_list) < 0) {
+        return -1;
+    }
+    if (PyList_Clear(interp->frame_hook_enable_list) < 0) {
+        return -1;
+    }
+    interp->frame_hook_list = NULL;
+    interp->frame_hook_enable_list = NULL;
+    return 0;
+}
+
+int
+PyUnstable_ContainsFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    Py_ssize_t n = _PyInterpreterState_CountFrameHooks(interp);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (Py_Is(PyList_GET_ITEM(interp->frame_hook_list, i), hook)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+frame_hook_update_enabled_list(PyInterpreterState *interp, PyObject *hook, PyObject *val)
+{
+    Py_ssize_t n = _PyInterpreterState_CountFrameHooks(interp);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (Py_Is(PyList_GET_ITEM(interp->frame_hook_list, i), hook)) {
+            if (PySequence_SetItem(interp->frame_hook_enable_list, i, val) < 0) {
+                return -1;
+            }
+            return 0;
+        }
+    }
+    DEBUG_msg("frame hook not found");
+    PyErr_SetString(PyExc_ValueError, "frame hook not found");
+    return -1;
+}
+
+int
+PyUnstable_EnableFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_update_enabled_list(interp, hook, Py_True);
+}
+
+int
+PyUnstable_DisableFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_update_enabled_list(interp, hook, Py_False);
+}
+
+int
+PyUnstable_RemoveFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    Py_ssize_t n = _PyInterpreterState_CountFrameHooks(interp);
+    for (Py_ssize_t i = 0; i < n; i++) {
+        if (Py_Is(PyList_GET_ITEM(interp->frame_hook_list, i), hook)) {
+            if (PySequence_DelItem(interp->frame_hook_list, i) < 0) {
+                return -1;
+            }
+            if (PySequence_DelItem(interp->frame_hook_enable_list, i) < 0) {
+                return -1;
+            }
+            return 0;
+        }
+    }
+    DEBUG_msg("frame hook not found");
+    PyErr_SetString(PyExc_ValueError, "frame hook not found");
+    return -1;
+}
+
+int
+PyUnstable_AddFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    if (interp->frame_hook_list == NULL) {
+        interp->frame_hook_list = PyList_New(0);
+        if (interp->frame_hook_list == NULL) {
+            return -1;
+        }
+        interp->frame_hook_enable_list = PyList_New(0);
+        if (interp->frame_hook_enable_list == NULL) {
+            return -1;
+        }
+    }
+    if (PyList_Append(interp->frame_hook_list, hook) < 0) {
+        return -1;
+    }
+    if (PyList_Append(interp->frame_hook_enable_list, Py_True) < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int
+_PyInterpreterState_IsFrameHookEnabled(PyInterpreterState *interp, Py_ssize_t index)
+{
+    PyObject* ptr = PyList_GET_ITEM(interp->frame_hook_enable_list, index);
+    return PyObject_IsTrue(ptr);
+}
 
 /********************************************/
 /* reporting execution state of all threads */

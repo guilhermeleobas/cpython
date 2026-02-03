@@ -261,3 +261,19 @@ PyAPI_FUNC(_PyFrameEvalFunction) _PyInterpreterState_GetEvalFrameFunc(
 PyAPI_FUNC(void) _PyInterpreterState_SetEvalFrameFunc(
     PyInterpreterState *interp,
     _PyFrameEvalFunction eval_frame);
+
+
+typedef PyCodeObject* (*_PyFrameHookFunction)(struct _PyInterpreterFrame *);
+
+int _PyInterpreterState_CountFrameHooks(PyInterpreterState *interp);
+int _PyInterpreterState_IsFrameHookEnabled(PyInterpreterState *interp, Py_ssize_t index);
+int _PyInterpreterState_HasFrameHooks(PyInterpreterState *interp);
+PyObject* _PyInterpreterState_GetFrameHook(PyInterpreterState *interp, Py_ssize_t index);
+PyCodeObject* _PyInterpreterState_CallFrameHook(PyInterpreterState *interp, Py_ssize_t index, struct _PyInterpreterFrame *frame);
+PyAPI_FUNC(PyObject *) PyUnstable_WrapFrameHookFunction(_PyFrameHookFunction hook);
+PyAPI_FUNC(int) PyUnstable_RemoveFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_AddFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_ClearFrameHooks(PyInterpreterState *interp);
+PyAPI_FUNC(int) PyUnstable_ContainsFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_EnableFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_DisableFrameHook(PyInterpreterState *interp, PyObject *hook);

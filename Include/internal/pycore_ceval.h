@@ -111,10 +111,28 @@ extern _PyPerf_Callbacks _Py_perfmap_callbacks;
 extern _PyPerf_Callbacks _Py_perfmap_jit_callbacks;
 #endif
 
+#define DEBUG_SET() getenv("DEBUG_PY")
+
+#define DEBUG_obj(o) \
+    if (DEBUG_SET()) { \
+        DEBUG_msg("Object: %s", PyUnicode_AsUTF8(PyObject_Repr(o))); \
+    }
+
+#define DEBUG_msg(fmt, ...)                    \
+if (DEBUG_SET()) {             \
+    fprintf(stderr, "CPython[%s:%d] " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+}
+
+
 static inline PyObject*
 _PyEval_EvalFrame(PyThreadState *tstate, _PyInterpreterFrame *frame, int throwflag)
 {
     EVAL_CALL_STAT_INC(EVAL_CALL_TOTAL);
+
+    if (_PyInterpreterState_HasFrameHooks(tstate->interp) && tstate->interp->enable_frame_hooks) {
+        return _PyEval_FrameHook(tstate, frame, throwflag);
+    }
+
     if (tstate->interp->eval_frame == NULL) {
         return _PyEval_EvalFrameDefault(tstate, frame, throwflag);
     }

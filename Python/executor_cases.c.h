@@ -5068,7 +5068,11 @@
         }
 
         case _CHECK_PEP_523: {
-            if (tstate->interp->eval_frame) {
+            if (IS_PEP523_HOOKED(tstate)) {
+                UOP_STAT_INC(uopcode, miss);
+                JUMP_TO_JUMP_TARGET();
+            }
+            if (IS_FRAME_HOOK_ENABLED(tstate)) {
                 UOP_STAT_INC(uopcode, miss);
                 JUMP_TO_JUMP_TARGET();
             }
@@ -5261,6 +5265,7 @@
             _PyInterpreterFrame *new_frame;
             new_frame = (_PyInterpreterFrame *)stack_pointer[-1].bits;
             assert(tstate->interp->eval_frame == NULL);
+            assert(!IS_FRAME_HOOK_ENABLED(tstate));
             _PyInterpreterFrame *temp = new_frame;
             stack_pointer += -1;
             assert(WITHIN_STACK_BOUNDS());

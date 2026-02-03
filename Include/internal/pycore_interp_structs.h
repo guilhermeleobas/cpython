@@ -866,6 +866,11 @@ struct _is {
     // Initialized to _PyEval_EvalFrameDefault().
     _PyFrameEvalFunction eval_frame;
 
+    // Initialized to NULL
+    PyObject* frame_hook_list;
+    PyObject* frame_hook_enable_list;
+    int enable_frame_hooks;
+
     PyFunction_WatchCallback func_watchers[FUNC_MAX_WATCHERS];
     // One bit is set for each non-NULL entry in func_watchers
     uint8_t active_func_watchers;

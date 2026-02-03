@@ -420,6 +420,10 @@ do { \
     PyObject *NAME##_temp[MAX_STACKREF_SCRATCH+1]; \
     PyObject **NAME = _PyObjectArray_FromStackRefArray(ARGS, ARG_COUNT, NAME##_temp + 1);
 
+#define IS_PEP523_HOOKED(tstate) (tstate->interp->eval_frame != NULL)
+#define IS_FRAME_HOOK_ENABLED(tstate) (tstate->interp->frame_hook_list != NULL)
+
+
 #define STACKREFS_TO_PYOBJECTS_CLEANUP(NAME) \
     /* +1 because we +1 previously */ \
     _PyObjectArray_Free(NAME - 1, NAME##_temp);
