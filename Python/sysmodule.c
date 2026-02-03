@@ -1159,6 +1159,26 @@ sys_settrace(PyObject *module, PyObject *function)
     Py_RETURN_NONE;
 }
 
+static PyObject *
+sys_add_frame_hook(PyObject *module, PyObject *callable)
+{
+    PyInterpreterState *interp = _PyInterpreterState_GET();
+    if (PyUnstable_AddFrameHook(interp, callable) < 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+sys_remove_frame_hook(PyObject *module, PyObject *callable)
+{
+    PyInterpreterState *interp = _PyInterpreterState_GET();
+    if (PyUnstable_RemoveFrameHook(interp, callable) < 0) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 /*[clinic input]
 sys._settraceallthreads
 
@@ -2880,6 +2900,8 @@ static PyMethodDef sys_methods[] = {
     SYS__CLEAR_TYPE_DESCRIPTORS_METHODDEF
     SYS__IS_GIL_ENABLED_METHODDEF
     SYS__DUMP_TRACELETS_METHODDEF
+    {"add_frame_hook", sys_add_frame_hook, METH_O, NULL},
+    {"remove_frame_hook", sys_remove_frame_hook, METH_O, NULL},
     {NULL, NULL}  // sentinel
 };
 

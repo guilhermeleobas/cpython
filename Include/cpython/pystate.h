@@ -208,6 +208,8 @@ struct _ts {
     */
     PyObject *threading_local_sentinel;
     _PyRemoteDebuggerSupport remote_debugger_support;
+
+    int enable_frame_hooks;
 };
 
 /* other API */
@@ -261,3 +263,27 @@ PyAPI_FUNC(_PyFrameEvalFunction) _PyInterpreterState_GetEvalFrameFunc(
 PyAPI_FUNC(void) _PyInterpreterState_SetEvalFrameFunc(
     PyInterpreterState *interp,
     _PyFrameEvalFunction eval_frame);
+
+
+typedef PyCodeObject* (*_PyFrameHookFunction)(struct _PyInterpreterFrame *);
+
+// A frame-hook list node; defined in the internal interpreter state.
+struct _PyFrameHookEntry;
+
+int _PyInterpreterState_HasFrameHooks(PyInterpreterState *interp);
+PyCodeObject* _PyInterpreterState_CallFrameHook(struct _PyFrameHookEntry *entry, struct _PyInterpreterFrame *frame);
+
+// Python-callable frame hooks (matched by callable identity).
+PyAPI_FUNC(int) PyUnstable_RemoveFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_AddFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_ClearFrameHooks(PyInterpreterState *interp);
+PyAPI_FUNC(int) PyUnstable_ContainsFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_EnableFrameHook(PyInterpreterState *interp, PyObject *hook);
+PyAPI_FUNC(int) PyUnstable_DisableFrameHook(PyInterpreterState *interp, PyObject *hook);
+
+// C-function frame hooks (matched by function pointer identity).
+PyAPI_FUNC(int) PyUnstable_AddFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn);
+PyAPI_FUNC(int) PyUnstable_ContainsFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn);
+PyAPI_FUNC(int) PyUnstable_EnableFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn);
+PyAPI_FUNC(int) PyUnstable_DisableFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn);
+PyAPI_FUNC(int) PyUnstable_RemoveFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn);

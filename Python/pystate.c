@@ -894,6 +894,10 @@ interpreter_clear(PyInterpreterState *interp, PyThreadState *tstate)
     assert(interp->imports.importlib == NULL);
     assert(interp->imports.import_func == NULL);
 
+    // Release frame hooks: drops strong refs to Python callables and frees
+    // every list node.
+    PyUnstable_ClearFrameHooks(interp);
+
     Py_CLEAR(interp->sysdict_copy);
     Py_CLEAR(interp->builtins_copy);
     Py_CLEAR(interp->dict);
@@ -1571,6 +1575,7 @@ init_threadstate(_PyThreadStateImpl *_tstate,
     tstate->gilstate_counter = 1;
 
     tstate->current_frame = NULL;
+    tstate->enable_frame_hooks = 1;
     tstate->datastack_chunk = NULL;
     tstate->datastack_top = NULL;
     tstate->datastack_limit = NULL;
@@ -2627,6 +2632,199 @@ PyThreadState_Next(PyThreadState *tstate) {
     return tstate->next;
 }
 
+/********************************************/
+/* Eval hooks */
+/********************************************/
+
+// Frame hooks are stored as a singly-linked list of tagged nodes on the
+// interpreter, mirroring the audit-hook list (_Py_AuditHookEntry). A node is a
+// C hook (cfunc) or a Python callable (pyfunc, strong ref); exactly one of the
+// two is non-NULL. Lookups match by cfunc pointer (C hooks) or pyfunc identity
+// (Python callables). Nodes are allocated with PyMem_RawMalloc.
+
+PyCodeObject*
+_PyInterpreterState_CallFrameHook(_PyFrameHookEntry *entry, _PyInterpreterFrame *frame)
+{
+    if (entry->cfunc != NULL) {
+        return (*entry->cfunc)(frame);
+    }
+    // Python callable: call with the frame object.
+    // Incomplete frames (e.g. context manager / generator frames mid-setup)
+    // cannot have a PyFrameObject created for them; skip the hook for those.
+    if (_PyFrame_IsIncomplete(frame)) {
+        PyCodeObject *code = (PyCodeObject *)PyUnstable_InterpreterFrame_GetCode(frame);
+        Py_INCREF(code);
+        return code;
+    }
+    PyObject *frameobj = (PyObject *)_PyFrame_GetFrameObject(frame);
+    if (frameobj == NULL) {
+        return NULL;
+    }
+    PyObject *result = PyObject_CallOneArg(entry->pyfunc, frameobj);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (!PyCode_Check(result)) {
+        PyErr_Format(PyExc_TypeError,
+            "frame hook must return a code object, not %.200s",
+            Py_TYPE(result)->tp_name);
+        Py_DECREF(result);
+        return NULL;
+    }
+    return (PyCodeObject *)result;
+}
+
+int
+_PyInterpreterState_HasFrameHooks(PyInterpreterState *interp)
+{
+    return interp->frame_hooks != NULL;
+}
+
+// Find the node matching either a C function (cfunc != NULL) or a Python
+// callable (cfunc == NULL, match pyfunc identity). Returns NULL if absent.
+static _PyFrameHookEntry *
+frame_hook_find(PyInterpreterState *interp, _PyFrameHookFunction cfunc, PyObject *pyfunc)
+{
+    for (_PyFrameHookEntry *e = interp->frame_hooks; e != NULL; e = e->next) {
+        if (cfunc != NULL) {
+            if (e->cfunc == cfunc) {
+                return e;
+            }
+        }
+        else if (e->cfunc == NULL && e->pyfunc == pyfunc) {
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static int
+frame_hook_append(PyInterpreterState *interp, _PyFrameHookFunction cfunc, PyObject *pyfunc)
+{
+    _PyFrameHookEntry *entry = PyMem_RawMalloc(sizeof(_PyFrameHookEntry));
+    if (entry == NULL) {
+        PyErr_NoMemory();
+        return -1;
+    }
+    entry->next = NULL;
+    entry->cfunc = cfunc;
+    entry->pyfunc = Py_XNewRef(pyfunc);
+    entry->enabled = 1;
+    // Append at the tail to preserve registration order.
+    _PyFrameHookEntry **link = &interp->frame_hooks;
+    while (*link != NULL) {
+        link = &(*link)->next;
+    }
+    *link = entry;
+    return 0;
+}
+
+static int
+frame_hook_set_enabled(PyInterpreterState *interp, _PyFrameHookFunction cfunc,
+                       PyObject *pyfunc, int enabled)
+{
+    _PyFrameHookEntry *e = frame_hook_find(interp, cfunc, pyfunc);
+    if (e == NULL) {
+        PyErr_SetString(PyExc_ValueError, "frame hook not found");
+        return -1;
+    }
+    e->enabled = enabled;
+    return 0;
+}
+
+static int
+frame_hook_remove(PyInterpreterState *interp, _PyFrameHookFunction cfunc, PyObject *pyfunc)
+{
+    for (_PyFrameHookEntry **link = &interp->frame_hooks; *link != NULL; link = &(*link)->next) {
+        _PyFrameHookEntry *e = *link;
+        int match = cfunc != NULL ? (e->cfunc == cfunc)
+                                  : (e->cfunc == NULL && e->pyfunc == pyfunc);
+        if (match) {
+            *link = e->next;
+            Py_XDECREF(e->pyfunc);
+            PyMem_RawFree(e);
+            return 0;
+        }
+    }
+    PyErr_SetString(PyExc_ValueError, "frame hook not found");
+    return -1;
+}
+
+int
+PyUnstable_ClearFrameHooks(PyInterpreterState *interp)
+{
+    _PyFrameHookEntry *e = interp->frame_hooks;
+    interp->frame_hooks = NULL;
+    while (e != NULL) {
+        _PyFrameHookEntry *next = e->next;
+        Py_XDECREF(e->pyfunc);
+        PyMem_RawFree(e);
+        e = next;
+    }
+    return 0;
+}
+
+/* Python-callable frame hooks (matched by callable identity). */
+
+int
+PyUnstable_AddFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_append(interp, NULL, hook);
+}
+
+int
+PyUnstable_ContainsFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_find(interp, NULL, hook) != NULL;
+}
+
+int
+PyUnstable_EnableFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_set_enabled(interp, NULL, hook, 1);
+}
+
+int
+PyUnstable_DisableFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_set_enabled(interp, NULL, hook, 0);
+}
+
+int
+PyUnstable_RemoveFrameHook(PyInterpreterState *interp, PyObject *hook)
+{
+    return frame_hook_remove(interp, NULL, hook);
+}
+
+int
+PyUnstable_AddFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn)
+{
+    return frame_hook_append(interp, fn, NULL);
+}
+
+int
+PyUnstable_ContainsFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn)
+{
+    return frame_hook_find(interp, fn, NULL) != NULL;
+}
+
+int
+PyUnstable_EnableFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn)
+{
+    return frame_hook_set_enabled(interp, fn, NULL, 1);
+}
+
+int
+PyUnstable_DisableFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn)
+{
+    return frame_hook_set_enabled(interp, fn, NULL, 0);
+}
+
+int
+PyUnstable_RemoveFrameHookFunction(PyInterpreterState *interp, _PyFrameHookFunction fn)
+{
+    return frame_hook_remove(interp, fn, NULL);
+}
 
 /********************************************/
 /* reporting execution state of all threads */

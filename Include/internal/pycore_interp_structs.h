@@ -756,6 +756,18 @@ struct _Py_unique_id_pool {
 #endif
 
 
+/* A node in an interpreter's frame-hook linked list, mirroring
+   _Py_AuditHookEntry. Each node is either a C hook (cfunc) or a Python callable
+   (pyfunc, strong ref); exactly one of the two is non-NULL. Nodes are allocated
+   with PyMem_RawMalloc. */
+typedef struct _PyFrameHookEntry {
+    struct _PyFrameHookEntry *next;
+    _PyFrameHookFunction cfunc;
+    PyObject *pyfunc;
+    int enabled;
+} _PyFrameHookEntry;
+
+
 /* PyInterpreterState holds the global state for one of the runtime's
    interpreters.  Typically the initial (main) interpreter is the only one.
 
@@ -865,6 +877,9 @@ struct _is {
     PyObject *builtins_copy;
     // Initialized to _PyEval_EvalFrameDefault().
     _PyFrameEvalFunction eval_frame;
+
+    // Frame hooks: singly-linked list; head is NULL when none are registered.
+    _PyFrameHookEntry *frame_hooks;
 
     PyFunction_WatchCallback func_watchers[FUNC_MAX_WATCHERS];
     // One bit is set for each non-NULL entry in func_watchers
