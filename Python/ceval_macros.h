@@ -536,6 +536,7 @@ do {                                                   \
 #endif
 
 #define IS_PEP523_HOOKED(tstate) (tstate->interp->eval_frame != NULL)
+#define IS_FRAME_HOOK_ENABLED(tstate) (tstate->interp->frame_hooks != NULL)
 
 static inline int
 check_periodics(PyThreadState *tstate) {

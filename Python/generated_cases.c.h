@@ -723,6 +723,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (BINARY_OP));
                     JUMP_TO_PREDICTED(BINARY_OP);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(BINARY_OP);
+                    assert(_PyOpcode_Deopt[opcode] == (BINARY_OP));
+                    JUMP_TO_PREDICTED(BINARY_OP);
+                }
             }
             // _BINARY_OP_SUBSCR_CHECK_FUNC
             {
@@ -769,6 +774,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -2;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);
@@ -1820,6 +1826,7 @@
                 }
                 if (Py_TYPE(callable_o) == &PyFunction_Type &&
                     !IS_PEP523_HOOKED(tstate) &&
+                    !IS_FRAME_HOOK_ENABLED(tstate) &&
                     ((PyFunctionObject *)callable_o)->vectorcall == _PyFunction_Vectorcall)
                 {
                     int code_flags = ((PyCodeObject*)PyFunction_GET_CODE(callable_o))->co_flags;
@@ -1897,6 +1904,11 @@
             // _CHECK_PEP_523
             {
                 if (IS_PEP523_HOOKED(tstate)) {
+                    UPDATE_MISS_STATS(CALL);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL));
+                    JUMP_TO_PREDICTED(CALL);
+                }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
                     UPDATE_MISS_STATS(CALL);
                     assert(_PyOpcode_Deopt[opcode] == (CALL));
                     JUMP_TO_PREDICTED(CALL);
@@ -1998,6 +2010,7 @@
             {
                 new_frame = init_frame;
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -2032,6 +2045,11 @@
             // _CHECK_PEP_523
             {
                 if (IS_PEP523_HOOKED(tstate)) {
+                    UPDATE_MISS_STATS(CALL);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL));
+                    JUMP_TO_PREDICTED(CALL);
+                }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
                     UPDATE_MISS_STATS(CALL);
                     assert(_PyOpcode_Deopt[opcode] == (CALL));
                     JUMP_TO_PREDICTED(CALL);
@@ -2140,6 +2158,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -2 - oparg;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);
@@ -2176,6 +2195,11 @@
             // _CHECK_PEP_523
             {
                 if (IS_PEP523_HOOKED(tstate)) {
+                    UPDATE_MISS_STATS(CALL);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL));
+                    JUMP_TO_PREDICTED(CALL);
+                }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
                     UPDATE_MISS_STATS(CALL);
                     assert(_PyOpcode_Deopt[opcode] == (CALL));
                     JUMP_TO_PREDICTED(CALL);
@@ -2271,6 +2295,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -2784,6 +2809,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (CALL_FUNCTION_EX));
                     JUMP_TO_PREDICTED(CALL_FUNCTION_EX);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(CALL_FUNCTION_EX);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL_FUNCTION_EX));
+                    JUMP_TO_PREDICTED(CALL_FUNCTION_EX);
+                }
             }
             // _MAKE_CALLARGS_A_TUPLE
             {
@@ -2867,6 +2897,7 @@
             {
                 new_frame = ex_frame;
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -2997,6 +3028,7 @@
                 else {
                     if (Py_TYPE(func) == &PyFunction_Type &&
                         !IS_PEP523_HOOKED(tstate) &&
+                        !IS_FRAME_HOOK_ENABLED(tstate) &&
                         ((PyFunctionObject *)func)->vectorcall == _PyFunction_Vectorcall) {
                         PyObject *callargs = PyStackRef_AsPyObjectSteal(callargs_st);
                         assert(PyTuple_CheckExact(callargs));
@@ -3295,6 +3327,7 @@
                 int positional_args = total_args - (int)PyTuple_GET_SIZE(kwnames_o);
                 if (Py_TYPE(callable_o) == &PyFunction_Type &&
                     !IS_PEP523_HOOKED(tstate) &&
+                    !IS_FRAME_HOOK_ENABLED(tstate) &&
                     ((PyFunctionObject *)callable_o)->vectorcall == _PyFunction_Vectorcall)
                 {
                     int code_flags = ((PyCodeObject*)PyFunction_GET_CODE(callable_o))->co_flags;
@@ -3366,6 +3399,11 @@
             // _CHECK_PEP_523
             {
                 if (IS_PEP523_HOOKED(tstate)) {
+                    UPDATE_MISS_STATS(CALL_KW);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL_KW));
+                    JUMP_TO_PREDICTED(CALL_KW);
+                }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
                     UPDATE_MISS_STATS(CALL_KW);
                     assert(_PyOpcode_Deopt[opcode] == (CALL_KW));
                     JUMP_TO_PREDICTED(CALL_KW);
@@ -3462,6 +3500,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -3577,6 +3616,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (CALL_KW));
                     JUMP_TO_PREDICTED(CALL_KW);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(CALL_KW);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL_KW));
+                    JUMP_TO_PREDICTED(CALL_KW);
+                }
             }
             // _CHECK_FUNCTION_VERSION_KW
             {
@@ -3650,6 +3694,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -4422,6 +4467,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (CALL));
                     JUMP_TO_PREDICTED(CALL);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(CALL);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL));
+                    JUMP_TO_PREDICTED(CALL);
+                }
             }
             // _CHECK_FUNCTION_VERSION
             {
@@ -4497,6 +4547,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -2 - oparg;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);
@@ -4532,6 +4583,11 @@
             // _CHECK_PEP_523
             {
                 if (IS_PEP523_HOOKED(tstate)) {
+                    UPDATE_MISS_STATS(CALL);
+                    assert(_PyOpcode_Deopt[opcode] == (CALL));
+                    JUMP_TO_PREDICTED(CALL);
+                }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
                     UPDATE_MISS_STATS(CALL);
                     assert(_PyOpcode_Deopt[opcode] == (CALL));
                     JUMP_TO_PREDICTED(CALL);
@@ -4600,6 +4656,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -6156,6 +6213,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (FOR_ITER));
                     JUMP_TO_PREDICTED(FOR_ITER);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(FOR_ITER);
+                    assert(_PyOpcode_Deopt[opcode] == (FOR_ITER));
+                    JUMP_TO_PREDICTED(FOR_ITER);
+                }
             }
             // _FOR_ITER_GEN_FRAME
             {
@@ -6184,6 +6246,7 @@
             {
                 new_frame = gen_frame;
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 _PyFrame_SetStackPointer(frame, stack_pointer);
                 assert(temp->previous == frame || temp->previous->previous == frame);
@@ -6884,6 +6947,7 @@
                 }
                 if (Py_TYPE(callable_o) == &PyFunction_Type &&
                     !IS_PEP523_HOOKED(tstate) &&
+                    !IS_FRAME_HOOK_ENABLED(tstate) &&
                     ((PyFunctionObject *)callable_o)->vectorcall == _PyFunction_Vectorcall)
                 {
                     int code_flags = ((PyCodeObject*)PyFunction_GET_CODE(callable_o))->co_flags;
@@ -7035,6 +7099,7 @@
                 else {
                     if (Py_TYPE(func) == &PyFunction_Type &&
                         !IS_PEP523_HOOKED(tstate) &&
+                        !IS_FRAME_HOOK_ENABLED(tstate) &&
                         ((PyFunctionObject *)func)->vectorcall == _PyFunction_Vectorcall) {
                         PyObject *callargs = PyStackRef_AsPyObjectSteal(callargs_st);
                         assert(PyTuple_CheckExact(callargs));
@@ -7180,6 +7245,7 @@
                 int positional_args = total_args - (int)PyTuple_GET_SIZE(kwnames_o);
                 if (Py_TYPE(callable_o) == &PyFunction_Type &&
                     !IS_PEP523_HOOKED(tstate) &&
+                    !IS_FRAME_HOOK_ENABLED(tstate) &&
                     ((PyFunctionObject *)callable_o)->vectorcall == _PyFunction_Vectorcall)
                 {
                     int code_flags = ((PyCodeObject*)PyFunction_GET_CODE(callable_o))->co_flags;
@@ -8501,6 +8567,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (LOAD_ATTR));
                     JUMP_TO_PREDICTED(LOAD_ATTR);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(LOAD_ATTR);
+                    assert(_PyOpcode_Deopt[opcode] == (LOAD_ATTR));
+                    JUMP_TO_PREDICTED(LOAD_ATTR);
+                }
             }
             // _LOAD_ATTR_GETATTRIBUTE_OVERRIDDEN_FRAME
             {
@@ -8542,6 +8613,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -1;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);
@@ -9043,6 +9115,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (LOAD_ATTR));
                     JUMP_TO_PREDICTED(LOAD_ATTR);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(LOAD_ATTR);
+                    assert(_PyOpcode_Deopt[opcode] == (LOAD_ATTR));
+                    JUMP_TO_PREDICTED(LOAD_ATTR);
+                }
             }
             // _LOAD_ATTR_PROPERTY_FRAME
             {
@@ -9079,6 +9156,7 @@
             // _PUSH_FRAME
             {
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -1;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);
@@ -11067,6 +11145,7 @@
                 PyObject *receiver_o = PyStackRef_AsPyObjectBorrow(receiver);
                 assert(frame->owner != FRAME_OWNED_BY_INTERPRETER);
                 if (!IS_PEP523_HOOKED(tstate) &&
+                    !IS_FRAME_HOOK_ENABLED(tstate) &&
                     (Py_TYPE(receiver_o) == &PyGen_Type || Py_TYPE(receiver_o) == &PyCoro_Type) &&
                     gen_try_set_executing((PyGenObject *)receiver_o))
                 {
@@ -11207,6 +11286,11 @@
                     assert(_PyOpcode_Deopt[opcode] == (SEND));
                     JUMP_TO_PREDICTED(SEND);
                 }
+                if (IS_FRAME_HOOK_ENABLED(tstate)) {
+                    UPDATE_MISS_STATS(SEND);
+                    assert(_PyOpcode_Deopt[opcode] == (SEND));
+                    JUMP_TO_PREDICTED(SEND);
+                }
             }
             // _SEND_GEN_FRAME
             {
@@ -11237,6 +11321,7 @@
             {
                 new_frame = gen_frame;
                 assert(!IS_PEP523_HOOKED(tstate));
+                assert(!IS_FRAME_HOOK_ENABLED(tstate));
                 _PyInterpreterFrame *temp = PyStackRef_Unwrap(new_frame);
                 stack_pointer += -1;
                 ASSERT_WITHIN_STACK_BOUNDS(__FILE__, __LINE__);

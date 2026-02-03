@@ -3432,6 +3432,9 @@ module_exec(PyObject *module)
 {
     PyInterpreterState *interp = PyInterpreterState_Get();
 
+    if (_PyTestInternalCapi_Init_FrameHook(module) < 0) {
+        return 1;
+    }
     if (_PyTestInternalCapi_Init_Lock(module) < 0) {
         return 1;
     }
