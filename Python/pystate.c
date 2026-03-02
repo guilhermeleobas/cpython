@@ -2742,7 +2742,6 @@ frame_hook_update_enabled_list(PyInterpreterState *interp, PyObject *hook, PyObj
             return 0;
         }
     }
-    DEBUG_msg("frame hook not found");
     PyErr_SetString(PyExc_ValueError, "frame hook not found");
     return -1;
 }
@@ -2774,7 +2773,6 @@ PyUnstable_RemoveFrameHook(PyInterpreterState *interp, PyObject *hook)
             return 0;
         }
     }
-    DEBUG_msg("frame hook not found");
     PyErr_SetString(PyExc_ValueError, "frame hook not found");
     return -1;
 }

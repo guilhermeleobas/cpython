@@ -1001,7 +1001,6 @@ typedef struct {
 static void
 _Hook_MaybeClearShadowFrame(PyThreadState* tstate, _PyInterpreterFrame* frame, _PyInterpreterFrame* shadow) {
     if (frame != shadow) {
-        DEBUG_msg("clear previous cloned frame");
         _PyEval_FrameClearAndPop(tstate, shadow);
     }
 }
@@ -1081,19 +1080,16 @@ _Hook_copy_args(_PyInterpreterFrame* old, _PyInterpreterFrame* new)
 static _PyInterpreterFrame*
 _Hook_CloneFrame(PyThreadState *tstate, _PyInterpreterFrame* old, PyCodeObject* new_code)
 {
-    DEBUG_msg("creating new code object %p from hook", new_code);
     assert(new_code != NULL);
     PyObject* new_func = PyFunction_New((PyObject*)new_code, old->f_globals);
 
     // copy the closure object
-    // DEBUG_msg("copying closure to new function object %p", new_func);
     PyObject* closure = PyFunction_GetClosure(PyStackRef_AsPyObjectBorrow(old->f_funcobj));
     if (closure) {
         PyFunction_SetClosure(new_func, closure);
     }
 
     // Create the shadow frame
-    // DEBUG_msg("creating shadow frame for code object %p, framesize=%d", new_code, new_code->co_framesize);
     if (!_PyThreadState_HasStackSpace(tstate, new_code->co_framesize)) {
         _PyErr_NoMemory(tstate);
         Py_DECREF(new_func);
@@ -1115,10 +1111,7 @@ _Hook_CloneFrame(PyThreadState *tstate, _PyInterpreterFrame* old, PyCodeObject* 
     }
 
     // Copy args
-    // DEBUG_msg("copying args to shadow frame");
     _Hook_copy_args(old, shadow);
-
-    DEBUG_msg("returning shadow frame %p", shadow);
     return shadow;
 }
 
@@ -1134,16 +1127,8 @@ _PyEval_FrameHook(PyThreadState *tstate,
     _PyInterpreterFrame* shadow = frame;
     Py_ssize_t n = _PyInterpreterState_CountFrameHooks(tstate->interp);
 
-    DEBUG_msg("");
-    DEBUG_msg("Entering _PyEval_FrameHook for function %s",
-              PyUnicode_AsUTF8(
-                  ((PyCodeObject*)PyUnstable_InterpreterFrame_GetCode(frame))->co_name));
-
-    DEBUG_msg("Number of frame hooks: %zd", n);
-
     for (Py_ssize_t i = 0; i < n; i++) {
         if (!_PyInterpreterState_IsFrameHookEnabled(tstate->interp, i)) {
-            DEBUG_msg("Frame hook %zd is disabled, skipping", i);
             continue;
         }
 
@@ -1153,7 +1138,6 @@ _PyEval_FrameHook(PyThreadState *tstate,
 
         if (new_code == NULL) {
             // NULL return indicates an error
-            DEBUG_msg("Frame hook returned NULL code object");
             // Only clear the original frame if we created a clone before
             // If we didn't create a clone, the original frame will be freed
             // by the caller of _PyEval_FrameHook
@@ -1196,7 +1180,6 @@ _PyEval_FrameHook(PyThreadState *tstate,
         return eval_function(tstate, frame, throwflag);
     }
 
-    DEBUG_msg("Calling eval_function with new frame=%p, old frame=%p", shadow, frame);
     PyObject *r = eval_function(tstate, shadow, throwflag);
     _PyEval_FrameClearAndPop(tstate, frame);
     return r;
