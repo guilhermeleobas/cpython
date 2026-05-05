@@ -119,6 +119,232 @@ class MonitoringBasicTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         sys.monitoring.free_tool_id(TEST_TOOL)
 
+    def test_py_start_can_replace_code(self):
+        def target(x):
+            return x + 1
+
+        def replacement(x):
+            return x + 100
+
+        def callback(code, offset):
+            self.assertIs(code, target.__code__)
+            self.assertEqual(offset, 0)
+            sys.monitoring.set_events(TEST_TOOL, 0)
+            return replacement.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "MonitoringTest.Tool")
+        sys.monitoring.register_callback(TEST_TOOL, E.PY_START, callback)
+        sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+
+        self.assertEqual(target(5), 105)
+        self.assertEqual(target(5), 6)
+        sys.monitoring.free_tool_id(TEST_TOOL)
+
+
+class CodeReplacementCompositionTest(unittest.TestCase):
+    """Composition of the PY_START code-replacement feature across tools.
+
+    A PY_START callback may return a code object to replace the running
+    frame's code.  These tests pin down what happens when more than one tool
+    is active at once, since replacements are stashed on a single per-thread
+    slot (tstate->monitoring_replacement_code) and consumed once by
+    _MONITOR_RESUME.
+    """
+
+    def setUp(self):
+        for tool in (TEST_TOOL, TEST_TOOL2, TEST_TOOL3):
+            self.assertIsNone(sys.monitoring.get_tool(tool))
+
+    def _teardown_tools(self, *tools):
+        for tool in tools:
+            sys.monitoring.set_events(tool, 0)
+            sys.monitoring.register_callback(tool, E.PY_START, None)
+            sys.monitoring.free_tool_id(tool)
+
+    def test_two_replacers_chain(self):
+        # Two tools both replace the code on PY_START.  Tools fire
+        # most-significant-bit first (TEST_TOOL2 before TEST_TOOL), and each is
+        # handed the replacement recorded by the tool before it, so the second
+        # tool transforms the first tool's output rather than clobbering it.
+        # Only the final accumulated code is applied.
+        def target(x):
+            return x + 1
+
+        def repl_first(x):
+            return x + 100
+
+        def repl_second(x):
+            return x + 1000
+
+        fired = []
+        second_saw = []
+
+        def cb_first(code, offset):
+            # Higher tool id: runs first, sees the frame's original code.
+            fired.append(TEST_TOOL2)
+            self.assertIs(code, target.__code__)
+            sys.monitoring.set_events(TEST_TOOL2, 0)
+            return repl_first.__code__
+
+        def cb_second(code, offset):
+            # Lower tool id: runs second, must see the first tool's output.
+            fired.append(TEST_TOOL)
+            second_saw.append(code)
+            sys.monitoring.set_events(TEST_TOOL, 0)
+            return repl_second.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "second")
+        sys.monitoring.use_tool_id(TEST_TOOL2, "first")
+        try:
+            sys.monitoring.register_callback(TEST_TOOL, E.PY_START, cb_second)
+            sys.monitoring.register_callback(TEST_TOOL2, E.PY_START, cb_first)
+            sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+            sys.monitoring.set_events(TEST_TOOL2, E.PY_START)
+            result = target(5)
+        finally:
+            self._teardown_tools(TEST_TOOL, TEST_TOOL2)
+
+        # Both callbacks ran, high tool id first.
+        self.assertEqual(fired, [TEST_TOOL2, TEST_TOOL])
+        # Chaining: the second tool was handed the first tool's replacement.
+        self.assertEqual(second_saw, [repl_first.__code__])
+        # Only the final code in the chain is applied.
+        self.assertEqual(result, 1005)
+
+    def test_three_replacers_chain(self):
+        # Three tools replace the code on PY_START.  They fire highest tool id
+        # first (TEST_TOOL3, TEST_TOOL2, TEST_TOOL), each handed the code
+        # accumulated by the tools before it, so the chain composes across all
+        # three and only the final code is applied.
+        def target(x):
+            return x + 1
+
+        def repl_a(x):
+            return x + 100
+
+        def repl_b(x):
+            return x + 1000
+
+        def repl_c(x):
+            return x + 10000
+
+        seen = {}
+
+        def cb_a(code, offset):  # TEST_TOOL3, fires first
+            seen[TEST_TOOL3] = code
+            sys.monitoring.set_events(TEST_TOOL3, 0)
+            return repl_a.__code__
+
+        def cb_b(code, offset):  # TEST_TOOL2, fires second
+            seen[TEST_TOOL2] = code
+            sys.monitoring.set_events(TEST_TOOL2, 0)
+            return repl_b.__code__
+
+        def cb_c(code, offset):  # TEST_TOOL, fires last
+            seen[TEST_TOOL] = code
+            sys.monitoring.set_events(TEST_TOOL, 0)
+            return repl_c.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "c")
+        sys.monitoring.use_tool_id(TEST_TOOL2, "b")
+        sys.monitoring.use_tool_id(TEST_TOOL3, "a")
+        try:
+            sys.monitoring.register_callback(TEST_TOOL, E.PY_START, cb_c)
+            sys.monitoring.register_callback(TEST_TOOL2, E.PY_START, cb_b)
+            sys.monitoring.register_callback(TEST_TOOL3, E.PY_START, cb_a)
+            sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+            sys.monitoring.set_events(TEST_TOOL2, E.PY_START)
+            sys.monitoring.set_events(TEST_TOOL3, E.PY_START)
+            result = target(5)
+        finally:
+            self._teardown_tools(TEST_TOOL, TEST_TOOL2, TEST_TOOL3)
+
+        # Each tool was handed the output of the tool that fired before it.
+        self.assertIs(seen[TEST_TOOL3], target.__code__)
+        self.assertIs(seen[TEST_TOOL2], repl_a.__code__)
+        self.assertIs(seen[TEST_TOOL], repl_b.__code__)
+        # Only the last replacement in the chain runs.
+        self.assertEqual(result, 10005)
+
+    def test_observer_after_replacer_sees_chained_code(self):
+        # A pure observer (returns None) and a replacer coexist.  Here the
+        # observer has the lower tool id, so it fires *after* the replacer in
+        # the same PY_START dispatch and is handed the chained (replacement)
+        # code, not the original -- consistent with the frame-hook path, where
+        # a later hook sees the shadow frame produced by an earlier one.
+        def target(x):
+            return x + 1
+
+        def repl(x):
+            return x + 100
+
+        observed = []
+
+        def observer(code, offset):
+            observed.append(code.co_name)
+
+        def replacer(code, offset):
+            sys.monitoring.set_events(TEST_TOOL2, 0)
+            return repl.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "observer")
+        sys.monitoring.use_tool_id(TEST_TOOL2, "replacer")
+        try:
+            sys.monitoring.register_callback(TEST_TOOL, E.PY_START, observer)
+            sys.monitoring.register_callback(TEST_TOOL2, E.PY_START, replacer)
+            sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+            sys.monitoring.set_events(TEST_TOOL2, E.PY_START)
+            result = target(5)
+            # Disable inline: the observer is still armed and would otherwise
+            # record PY_START for the very next Python frame (teardown, etc.).
+            sys.monitoring.set_events(TEST_TOOL, 0)
+        finally:
+            self._teardown_tools(TEST_TOOL, TEST_TOOL2)
+
+        self.assertEqual(result, 105)
+        # Firing after the replacer, the observer sees the chained code on the
+        # original frame, and again on the replacement frame it runs into.
+        self.assertEqual(observed, ["repl", "repl"])
+
+    def test_observer_before_replacer_sees_original_then_replacement(self):
+        # Tool-id roles swapped relative to the previous test: the observer now
+        # has the higher tool id, so it fires *before* the replacer and sees
+        # the original code, then fires again on the replacement frame.  This
+        # is the ordering-dependent counterpart to the chained-code case above.
+        def target(x):
+            return x + 1
+
+        def repl(x):
+            return x + 100
+
+        observed = []
+
+        def observer(code, offset):
+            observed.append(code.co_name)
+
+        def replacer(code, offset):
+            sys.monitoring.set_events(TEST_TOOL, 0)
+            return repl.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "replacer")
+        sys.monitoring.use_tool_id(TEST_TOOL2, "observer")
+        try:
+            sys.monitoring.register_callback(TEST_TOOL, E.PY_START, replacer)
+            sys.monitoring.register_callback(TEST_TOOL2, E.PY_START, observer)
+            sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+            sys.monitoring.set_events(TEST_TOOL2, E.PY_START)
+            result = target(5)
+            # Disable inline: the observer is still armed and would otherwise
+            # record PY_START for the very next Python frame (teardown, etc.).
+            sys.monitoring.set_events(TEST_TOOL2, 0)
+        finally:
+            self._teardown_tools(TEST_TOOL, TEST_TOOL2)
+
+        self.assertEqual(result, 105)
+        # Firing before the replacer, the observer sees the original code, then
+        # the replacement frame it runs into.
+        self.assertEqual(observed, ["target", "repl"])
+
 
 class MonitoringTestBase:
 

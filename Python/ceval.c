@@ -1123,6 +1123,125 @@ _Hook_CloneFrame(PyThreadState *tstate, _PyInterpreterFrame* old, PyCodeObject* 
 }
 
 
+/* Replace the current top frame `old` with a fresh frame running `new_code`.
+ * Used by sys.monitoring code replacement (PY_START returning a code object).
+ *
+ * Unlike _Hook_CloneFrame, this does NOT stack the new frame on top of the old
+ * one.  At PY_START the old frame is the top of the data stack, so we pop it
+ * and push the new frame into the same slot.  This keeps the data stack a
+ * strict LIFO (a frame stacked above and bypassed would leave a hole that trips
+ * the top-frame assertion in clear_thread_frame) and lets new_code use a larger
+ * frame than old_code.
+ *
+ * PY_START fires at RESUME, i.e. AFTER old_code's MAKE_CELL/COPY_FREE_VARS
+ * prologue has run, so old's argument slots that are cell variables already
+ * hold cells.  Rather than reproduce the post-prologue state (which would have
+ * to match new_code's cell/free-var layout exactly), we mimic a normal call:
+ * recover the raw argument values (unwrapping any arg cell), start new_code
+ * from the top, and let its own prologue rebuild cells and free vars for its
+ * own layout.  This is robust to differing cell/free-var layouts (e.g. Dynamo
+ * resume functions).
+ *
+ * Returns the new top frame, or NULL with an exception set. */
+_PyInterpreterFrame*
+_Hook_ReplaceTopFrame(PyThreadState *tstate, _PyInterpreterFrame *old,
+                      PyCodeObject *new_code)
+{
+    PyCodeObject *old_code = _PyFrame_GetCode(old);
+    assert((PyObject **)old + old_code->co_framesize == tstate->datastack_top);
+
+    // The new code is entered with the same arguments, so the argument counts
+    // must match.  Reject incompatible code before any surgery.
+    if (_Hook_check_code_compatibility(old_code, new_code) < 0) {
+        return NULL;
+    }
+
+    PyObject *globals = old->f_globals;
+    PyObject *old_func = PyStackRef_AsPyObjectBorrow(old->f_funcobj);
+    PyObject *closure = old_func ? PyFunction_GetClosure(old_func) : NULL;
+
+    PyObject *new_func = PyFunction_New((PyObject *)new_code, globals);
+    if (new_func == NULL) {
+        return NULL;
+    }
+    if (closure != NULL && PyFunction_SetClosure(new_func, closure) < 0) {
+        Py_DECREF(new_func);
+        return NULL;
+    }
+
+    Py_ssize_t total_argcount = old_code->co_argcount +
+                                old_code->co_kwonlyargcount +
+                                !!(old_code->co_flags & CO_VARARGS) +
+                                !!(old_code->co_flags & CO_VARKEYWORDS);
+    _PyStackRef *fastlocals_old = _PyFrame_GetLocalsArray(old);
+    // Scratch space to carry the arguments across the frame swap: the old frame
+    // is cleared before the new one is pushed, so the values cannot stay on the
+    // value stack.  Almost every signature fits the small on-stack buffer; only
+    // rare wide ones fall back to a heap allocation.
+    _PyStackRef small_args[8];
+    _PyStackRef *args = small_args;
+    if (total_argcount > (Py_ssize_t)Py_ARRAY_LENGTH(small_args)) {
+        args = PyMem_New(_PyStackRef, total_argcount);
+        if (args == NULL) {
+            Py_DECREF(new_func);
+            PyErr_NoMemory();
+            return NULL;
+        }
+    }
+    // Recover raw argument values; unwrap cells for arguments that the prologue
+    // promoted to cell variables (new_code's prologue will re-wrap them).
+    for (Py_ssize_t i = 0; i < total_argcount; i++) {
+        _PyStackRef slot = fastlocals_old[i];
+        if (_PyLocals_GetKind(old_code->co_localspluskinds, i) & CO_FAST_CELL) {
+            PyObject *val = PyStackRef_IsNull(slot)
+                ? NULL : PyCell_GET(PyStackRef_AsPyObjectBorrow(slot));
+            args[i] = val ? PyStackRef_FromPyObjectNew(val) : PyStackRef_NULL;
+        }
+        else {
+            args[i] = PyStackRef_IsNull(slot) ? PyStackRef_NULL
+                                              : PyStackRef_DUP(slot);
+        }
+    }
+
+    _PyInterpreterFrame *prev = old->previous;
+
+    if (!_PyThreadState_HasStackSpace(tstate, new_code->co_framesize)) {
+        // old still occupies the stack; report failure without disturbing it.
+        for (Py_ssize_t i = 0; i < total_argcount; i++) {
+            PyStackRef_XCLOSE(args[i]);
+        }
+        if (args != small_args) {
+            PyMem_Free(args);
+        }
+        Py_DECREF(new_func);
+        _PyErr_NoMemory(tstate);
+        return NULL;
+    }
+
+    // Unlink before clearing: _PyFrame_ClearExceptCode asserts the frame
+    // being cleared is not the current frame (see RETURN_VALUE).
+    tstate->current_frame = prev;
+    _PyEval_FrameClearAndPop(tstate, old);
+
+    // null_locals_from=0: all of new's locals start NULL; we then place the
+    // arguments and let the prologue (run from the top of new_code) build the
+    // cell and free variables.
+    _PyInterpreterFrame *new = _PyFrame_PushUnchecked(
+        tstate, PyStackRef_FromPyObjectSteal(new_func), 0, prev);
+
+    _PyStackRef *fastlocals_new = _PyFrame_GetLocalsArray(new);
+    for (Py_ssize_t i = 0; i < total_argcount; i++) {
+        fastlocals_new[i] = args[i];
+    }
+    if (args != small_args) {
+        PyMem_Free(args);
+    }
+
+    tstate->current_frame = new;
+    return new;
+}
+
+
 PyObject* _Py_HOT_FUNCTION DONT_SLP_VECTORIZE
 _PyEval_FrameHook(PyThreadState *tstate,
                   _PyInterpreterFrame *frame, int throwflag)

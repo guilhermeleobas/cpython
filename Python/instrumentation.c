@@ -967,11 +967,28 @@ remove_per_instruction_tools(PyCodeObject * code, int offset, int tools)
 }
 
 
-/* Return 1 if DISABLE returned, -1 if error, 0 otherwise */
+/* Return 1 if DISABLE returned, 2 if code replacement was recorded,
+   -1 if error, 0 otherwise.
+
+   When `frame` is non-NULL (only the PY_START path at a RESUME passes it) and
+   the callback returns a code object different from the one it was given
+   (args[0]), the code is stashed on tstate->monitoring_replacement_code for
+   _MONITOR_RESUME to consume: it pops the current top frame and pushes a fresh
+   frame running the new code in its place.  The work is deferred to
+   _MONITOR_RESUME because only the evaluator owns the live frame pointer;
+   popping here would leave call_instrumentation_vector dereferencing a dead
+   frame.
+
+   Multiple tools compose by chaining: call_instrumentation_vector hands each
+   subsequent tool the replacement recorded so far (as args[0]) instead of the
+   original code, so a tool can transform the previous tool's output.  Only the
+   final accumulated code is applied, once, by _MONITOR_RESUME.  This mirrors
+   the frame-hook path (_PyEval_FrameHook), where each hook sees the shadow
+   frame produced by the hooks before it. */
 static int
 call_one_instrument(
     PyInterpreterState *interp, PyThreadState *tstate, PyObject **args,
-    size_t nargsf, int8_t tool, int event)
+    size_t nargsf, int8_t tool, int event, _PyInterpreterFrame *frame)
 {
     assert(0 <= tool && tool < 8);
     assert(tstate->tracing == 0);
@@ -987,6 +1004,23 @@ call_one_instrument(
     tstate->what_event = old_what;
     if (res == NULL) {
         return -1;
+    }
+    if (frame != NULL &&
+        event == PY_MONITORING_EVENT_PY_START && PyCode_Check(res))
+    {
+        /* Compare against the code handed to this callback (args[0]), not the
+           frame's physical code.  When several tools are active each is given
+           the replacement accumulated by the tools before it, so a tool that
+           returns the code it was given is a no-op and one that returns a
+           different object extends the chain.  The frame keeps running the
+           original code; the final accumulated replacement is applied once by
+           _MONITOR_RESUME. */
+        if ((PyObject *)res != args[0]) {
+            Py_XSETREF(tstate->monitoring_replacement_code, (PyCodeObject *)res);
+            return 2;
+        }
+        Py_DECREF(res);  // no change from the code this tool was given
+        return 0;
     }
     Py_DECREF(res);
     return (res == &_PyInstrumentation_DISABLE);
@@ -1169,9 +1203,17 @@ call_instrumentation_vector(
         assert(tool >= 0 && tool < 8);
         assert(tools & (1 << tool));
         tools ^= (1 << tool);
-        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event);
+        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool,
+                                      event, frame);
         if (res == 0) {
             /* Nothing to do */
+        }
+        else if (res == 2) {
+            /* A replacement was recorded.  Hand it to the remaining tools as
+               the current code so they can transform it further (chaining);
+               _MONITOR_RESUME applies the final accumulated result once after
+               the loop. */
+            callargs[0] = (PyObject *)tstate->monitoring_replacement_code;
         }
         else if (res < 0) {
             /* error */
@@ -1371,7 +1413,7 @@ _Py_call_instrumentation_line(PyThreadState *tstate, _PyInterpreterFrame* frame,
         tools &= ~(1 << tool);
         int res = call_one_instrument(interp, tstate, &args[1],
                                       2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                      tool, PY_MONITORING_EVENT_LINE);
+                                      tool, PY_MONITORING_EVENT_LINE, NULL);
         if (res == 0) {
             /* Nothing to do */
         }
@@ -1429,7 +1471,7 @@ _Py_call_instrumentation_instruction(PyThreadState *tstate, _PyInterpreterFrame*
         tools &= ~(1 << tool);
         int res = call_one_instrument(interp, tstate, &args[1],
                                       2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                      tool, PY_MONITORING_EVENT_INSTRUCTION);
+                                      tool, PY_MONITORING_EVENT_INSTRUCTION, NULL);
         if (res == 0) {
             /* Nothing to do */
         }
@@ -2618,7 +2660,7 @@ capi_call_instrumentation(PyMonitoringState *state, PyObject *codelike, int32_t 
         assert(tool >= 0 && tool < 8);
         assert(tools & (1 << tool));
         tools ^= (1 << tool);
-        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event);
+        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event, NULL);
         if (res == 0) {
             /* Nothing to do */
         }

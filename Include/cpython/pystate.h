@@ -210,6 +210,7 @@ struct _ts {
     _PyRemoteDebuggerSupport remote_debugger_support;
 
     int enable_frame_hooks;
+    PyCodeObject *monitoring_replacement_code;
 };
 
 /* other API */

@@ -7603,6 +7603,22 @@
                 if (err) {
                     JUMP_TO_LABEL(error);
                 }
+                if (tstate->monitoring_replacement_code != NULL) {
+                    PyCodeObject *new_code = tstate->monitoring_replacement_code;
+                    tstate->monitoring_replacement_code = NULL;
+                    _PyFrame_SetStackPointer(frame, stack_pointer);
+                    _PyInterpreterFrame *new_frame =
+                    _Hook_ReplaceTopFrame(tstate, frame, new_code);
+                    Py_DECREF(new_code);
+                    if (new_frame == NULL) {
+                        stack_pointer = _PyFrame_GetStackPointer(frame);
+                        JUMP_TO_LABEL(error);
+                    }
+                    frame = new_frame;
+                    stack_pointer = _PyFrame_GetStackPointer(frame);
+                    next_instr = frame->instr_ptr;
+                    DISPATCH();
+                }
                 if (frame->instr_ptr != this_instr) {
                     next_instr = frame->instr_ptr;
                 }

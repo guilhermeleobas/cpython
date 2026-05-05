@@ -238,6 +238,27 @@ dummy_func(
             int err = _Py_call_instrumentation(
                     tstate, oparg > 0, frame, this_instr);
             ERROR_IF(err);
+            if (tstate->monitoring_replacement_code != NULL) {
+                /* A PY_START callback returned a code object.  `frame` is the
+                 * top of the data stack here; replace it in place with a fresh
+                 * frame for the new code, carrying the arguments over. */
+                PyCodeObject *new_code = tstate->monitoring_replacement_code;
+                tstate->monitoring_replacement_code = NULL;
+                SAVE_STACK();
+                _PyInterpreterFrame *new_frame =
+                    _Hook_ReplaceTopFrame(tstate, frame, new_code);
+                Py_DECREF(new_code);
+                if (new_frame == NULL) {
+                    /* On failure the helper leaves the old frame intact and
+                     * still current, so propagate the error from it. */
+                    RELOAD_STACK();
+                    goto error;
+                }
+                frame = new_frame;
+                RELOAD_STACK();
+                next_instr = frame->instr_ptr;
+                DISPATCH();
+            }
             if (frame->instr_ptr != this_instr) {
                 /* Instrumentation has jumped */
                 next_instr = frame->instr_ptr;
