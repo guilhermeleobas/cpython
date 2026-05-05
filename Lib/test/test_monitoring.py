@@ -119,6 +119,27 @@ class MonitoringBasicTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         sys.monitoring.free_tool_id(TEST_TOOL)
 
+    def test_py_start_can_replace_code(self):
+        def target(x):
+            return x + 1
+
+        def replacement(x):
+            return x + 100
+
+        def callback(code, offset):
+            self.assertIs(code, target.__code__)
+            self.assertEqual(offset, 0)
+            sys.monitoring.set_events(TEST_TOOL, 0)
+            return replacement.__code__
+
+        sys.monitoring.use_tool_id(TEST_TOOL, "MonitoringTest.Tool")
+        sys.monitoring.register_callback(TEST_TOOL, E.PY_START, callback)
+        sys.monitoring.set_events(TEST_TOOL, E.PY_START)
+
+        self.assertEqual(target(5), 105)
+        self.assertEqual(target(5), 6)
+        sys.monitoring.free_tool_id(TEST_TOOL)
+
 
 class MonitoringTestBase:
 
