@@ -1603,6 +1603,7 @@ init_threadstate(_PyThreadStateImpl *_tstate,
     tstate->last_profiled_frame = NULL;
     tstate->last_profiled_frame_seq = 0;
     tstate->enable_frame_hooks = 1;
+    tstate->monitoring_replacement_code = NULL;
     tstate->datastack_chunk = NULL;
     tstate->datastack_top = NULL;
     tstate->datastack_limit = NULL;

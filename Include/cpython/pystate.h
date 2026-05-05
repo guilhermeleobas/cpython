@@ -254,6 +254,7 @@ struct _ts {
         PyInterpreterGuard *owned_guard;
     } ensure;
     int enable_frame_hooks;
+    PyCodeObject *monitoring_replacement_code;
 };
 
 /* other API */
