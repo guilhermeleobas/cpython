@@ -967,11 +967,73 @@ remove_per_instruction_tools(PyCodeObject * code, int offset, int tools)
 }
 
 
-/* Return 1 if DISABLE returned, -1 if error, 0 otherwise */
+static int
+can_replace_frame_code(PyCodeObject *old_code, PyCodeObject *new_code)
+{
+    if (old_code == new_code) {
+        return 1;
+    }
+    if (old_code->co_nlocalsplus != new_code->co_nlocalsplus) {
+        PyErr_SetString(PyExc_ValueError,
+                        "replacement code must have the same localsplus size");
+        return -1;
+    }
+    int same = PyObject_RichCompareBool(old_code->co_localsplusnames,
+                                        new_code->co_localsplusnames, Py_EQ);
+    if (same < 0) {
+        return -1;
+    }
+    if (!same) {
+        PyErr_SetString(PyExc_ValueError,
+                        "replacement code must have the same localsplus names");
+        return -1;
+    }
+    same = PyObject_RichCompareBool(old_code->co_localspluskinds,
+                                    new_code->co_localspluskinds, Py_EQ);
+    if (same < 0) {
+        return -1;
+    }
+    if (!same) {
+        PyErr_SetString(PyExc_ValueError,
+                        "replacement code must have the same localsplus kinds");
+        return -1;
+    }
+    if (new_code->co_framesize > old_code->co_framesize) {
+        PyErr_SetString(PyExc_ValueError,
+                        "replacement code must not require a larger frame");
+        return -1;
+    }
+    return 1;
+}
+
+static int
+replace_frame_code(_PyInterpreterFrame *frame, int offset,
+                   PyCodeObject *new_code)
+{
+    PyCodeObject *old_code = _PyFrame_GetCode(frame);
+    int valid = can_replace_frame_code(old_code, new_code);
+    if (valid <= 0) {
+        return valid;
+    }
+
+    _PyStackRef old_executable = frame->f_executable;
+    frame->f_executable = PyStackRef_FromPyObjectNew((PyObject *)new_code);
+#ifdef Py_GIL_DISABLED
+    _PyFrame_InitializeTLBC(_PyThreadState_GET(), frame, new_code);
+    frame->instr_ptr = _PyFrame_GetBytecode(frame) + offset;
+#else
+    frame->instr_ptr = _PyCode_CODE(new_code) + offset;
+#endif
+    PyStackRef_CLOSE(old_executable);
+    return 1;
+}
+
+/* Return 1 if DISABLE returned, 2 if code replacement returned,
+   -1 if error, 0 otherwise */
 static int
 call_one_instrument(
     PyInterpreterState *interp, PyThreadState *tstate, PyObject **args,
-    size_t nargsf, int8_t tool, int event)
+    size_t nargsf, int8_t tool, int event, PyObject **replacement_code)
 {
     assert(0 <= tool && tool < 8);
     assert(tstate->tracing == 0);
@@ -987,6 +1049,12 @@ call_one_instrument(
     tstate->what_event = old_what;
     if (res == NULL) {
         return -1;
+    }
+    if (replacement_code != NULL &&
+        event == PY_MONITORING_EVENT_PY_START && PyCode_Check(res))
+    {
+        *replacement_code = res;
+        return 2;
     }
     Py_DECREF(res);
     return (res == &_PyInstrumentation_DISABLE);
@@ -1169,9 +1237,20 @@ call_instrumentation_vector(
         assert(tool >= 0 && tool < 8);
         assert(tools & (1 << tool));
         tools ^= (1 << tool);
-        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event);
+        PyObject *replacement_code = NULL;
+        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool,
+                                      event, &replacement_code);
         if (res == 0) {
             /* Nothing to do */
+        }
+        else if (res == 2) {
+            if (replace_frame_code(frame, offset, (PyCodeObject *)replacement_code) < 0) {
+                Py_DECREF(replacement_code);
+                err = -1;
+                break;
+            }
+            args[1] = (PyObject *)_PyFrame_GetCode(frame);
+            Py_DECREF(replacement_code);
         }
         else if (res < 0) {
             /* error */
@@ -1371,7 +1450,7 @@ _Py_call_instrumentation_line(PyThreadState *tstate, _PyInterpreterFrame* frame,
         tools &= ~(1 << tool);
         int res = call_one_instrument(interp, tstate, &args[1],
                                       2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                      tool, PY_MONITORING_EVENT_LINE);
+                                      tool, PY_MONITORING_EVENT_LINE, NULL);
         if (res == 0) {
             /* Nothing to do */
         }
@@ -1429,7 +1508,7 @@ _Py_call_instrumentation_instruction(PyThreadState *tstate, _PyInterpreterFrame*
         tools &= ~(1 << tool);
         int res = call_one_instrument(interp, tstate, &args[1],
                                       2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
-                                      tool, PY_MONITORING_EVENT_INSTRUCTION);
+                                      tool, PY_MONITORING_EVENT_INSTRUCTION, NULL);
         if (res == 0) {
             /* Nothing to do */
         }
@@ -2618,7 +2697,7 @@ capi_call_instrumentation(PyMonitoringState *state, PyObject *codelike, int32_t 
         assert(tool >= 0 && tool < 8);
         assert(tools & (1 << tool));
         tools ^= (1 << tool);
-        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event);
+        int res = call_one_instrument(interp, tstate, callargs, nargsf, tool, event, NULL);
         if (res == 0) {
             /* Nothing to do */
         }
