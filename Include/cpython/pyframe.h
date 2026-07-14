@@ -36,6 +36,20 @@ PyAPI_FUNC(int) PyUnstable_InterpreterFrame_GetLasti(struct _PyInterpreterFrame 
  * Does not raise an exception. */
 PyAPI_FUNC(int) PyUnstable_InterpreterFrame_GetLine(struct _PyInterpreterFrame *frame);
 
+/* Fills `out[0 .. co_nlocalsplus)` with the frame's local variables, indexed by
+ * localsplus index, with cell and free variables unboxed to their contents.
+ * Slots that are unset or hidden are set to NULL.  Free variables are read from
+ * the function closure, so this works on a frame that has not started executing
+ * (before COPY_FREE_VARS runs).  The frame is not modified.
+ *
+ * `out` must point to a buffer of at least co_nlocalsplus slots.
+ *
+ * On success returns co_nlocalsplus and each written slot holds a strong
+ * reference (the caller must decref).  Returns -1 with an exception set if
+ * `out` is NULL. */
+PyAPI_FUNC(int) PyUnstable_InterpreterFrame_GetLocals(
+    struct _PyInterpreterFrame *frame, PyObject **out);
+
 #define PyUnstable_EXECUTABLE_KIND_SKIP 0
 #define PyUnstable_EXECUTABLE_KIND_PY_FUNCTION 1
 #define PyUnstable_EXECUTABLE_KIND_BUILTIN_FUNCTION 3
