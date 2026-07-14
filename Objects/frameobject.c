@@ -2240,6 +2240,55 @@ frame_get_var(_PyInterpreterFrame *frame, PyCodeObject *co, int i,
 }
 
 
+int
+PyUnstable_InterpreterFrame_GetLocals(_PyInterpreterFrame *frame,
+                                      PyObject **out)
+{
+    PyCodeObject *co = _PyFrame_GetCode(frame);
+    Py_ssize_t n = co->co_nlocalsplus;
+    if (n > 0 && out == NULL) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "PyUnstable_InterpreterFrame_GetLocals: out must not be NULL");
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        out[i] = NULL;
+    }
+
+    int offset = PyUnstable_Code_GetFirstFree(co);  // n - co_nfreevars
+
+    // Locals and cell variables. frame_get_var unboxes cells and copes with
+    // not-yet-started frames and arguments not yet promoted by MAKE_CELL.
+    for (int i = 0; i < offset; i++) {
+        if (_PyLocals_GetKind(co->co_localspluskinds, i) & CO_FAST_HIDDEN) {
+            continue;
+        }
+        PyObject *value = NULL;
+        if (frame_get_var(frame, co, i, &value) && value != NULL) {
+            out[i] = value;  // strong reference
+        }
+    }
+
+    // Free variables: read from the function closure rather than localsplus. On
+    // a not-yet-started frame COPY_FREE_VARS has not run, so the localsplus
+    // slots are still empty; after it runs the closure holds the same cell
+    // objects, so reading the closure is correct in both cases.
+    if (co->co_nfreevars > 0
+        && (co->co_flags & CO_OPTIMIZED)
+        && PyStackRef_FunctionCheck(frame->f_funcobj))
+    {
+        PyFunctionObject *func = _PyFrame_GetFunction(frame);
+        PyObject *closure = func->func_closure;
+        for (int i = 0; i < co->co_nfreevars; i++) {
+            PyObject *cell = PyTuple_GET_ITEM(closure, i);
+            out[offset + i] = Py_XNewRef(PyCell_GET(cell));
+        }
+    }
+    return (int)n;
+}
+
+
 bool
 _PyFrame_HasHiddenLocals(_PyInterpreterFrame *frame)
 {
